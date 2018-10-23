@@ -1,0 +1,177 @@
+#!/usr/bin/python
+# -*- coding: utf8 -*-
+
+from pymodbus.client.sync import ModbusTcpClient
+import math
+import struct
+import getopt, sys
+
+######################################### REG MAP #######################################
+
+# register / lenght
+
+#  660:1    on/off
+# 1015:1    L1 / A / UINT / x1
+# 1016:1    L2 / A / UINT / x1
+# 1017:1    L3 / A / UINT / x1
+# 1036:1    Ptot / kWt / INT / x10
+# 1044:1    Stot / kVA / UINT / x10
+# 1999:2    Ep / kWt/h / DINT / x1   Ep = reg1999 x 65536 + reg2000
+# 5703:1    Status of emergency signals
+# 8850:1    Temp / C / INT / x1
+# 8856:1    Module status SDx
+# 9999:1    Emergency shutdown state
+
+reg_dict = {  660:1,
+	     1015:3,
+             1036:1,
+             1044:1,
+             1999:2,
+             5703:1,
+             8850:1,
+             8856:1,
+             9999:1,
+           }
+
+#########################################################################################
+
+''' Main program '''
+def main():
+    ip = ""
+    tp = "3"
+    datadir = "/home/utf/nsx/"
+    opts, args = getopt.getopt(sys.argv[1:], "hH:s:e:t:d:", ["help", "host", "adr_str", "adr_end", "type", "datadir"])
+    for o, a in opts:
+	if o in ("-h", "--help"):
+            usage()
+	    exit(0)
+        elif o in ("-H", "--host"):
+            ip = str(a)
+        elif o in ("-s", "--adr_str"):
+            a_s = int(a)
+	elif o in ("-e", "--adr_end"):
+            a_e = int(a)
+        elif o in ("-t", "--type"):
+            tp = int(a)
+	elif o in ("-d", "--datadir"):
+            datadir = str(a)
+        else:
+	    usage()
+	    exit(0)
+    #print("Dir %s\n" % datadir)
+
+    client = ModbusTcpClient(ip, timeout=2)
+    client.connect()
+    
+    out = ""
+    junit = ""
+    count_err = {a_s:0} 
+    for unt in range(a_s,a_e+1):
+	out = "{\n"
+        count_err.update({unt:0}) 
+	path_file = datadir + "NSX-" + str(unt) + ".log"
+	#try:
+        #    fh = open(path_file, "r+")
+        #except IOError as e:
+        #    fh = open(path_file, "w+")
+	for key in reg_dict:
+	    if( tp == 4 ):
+        	rr = client.read_input_registers(key, reg_dict[key], unit=unt)
+    	    elif( tp == 3 ):
+        	rr = client.read_holding_registers(key, reg_dict[key], unit=unt)
+            err=0
+	    
+	    try:
+                getattr(rr, 'function_code')
+    	    except AttributeError:
+        	err = 1;
+                
+	    
+	    if(err == 0 and rr.function_code < 0x80):
+    	    	val = rr.registers
+	 	#resu = "key: " + str(key) + "-> val " + str(val)
+                #print("%s\n" % resu)
+                if val[0] == 32768:
+                    continue
+		elif key == 1999:
+                    res = int(val[1])*65536+int(val[0])
+                    out += "\"Energy\"" + " : " + str(res) + "\n"
+                    #out += str(key) + " : " + str(res) + "\n"
+		elif reg_dict[key] == 1:
+                    #if key == 1036 or key == 1044:
+		    #	res = float(val[0])/10
+		    #else:
+                    if key == 1036:
+                        junit="\"ActivePower\""	
+                    elif key == 1044:
+                        junit="\"ApparentPower\""
+                    else:
+                        continue  
+                    #if key == 1036:
+                    #    junit="\"Ptot\""
+		    res = int(val[0])
+                    out += junit + " : " + str(res) + ",\n"
+                else:
+                    out += "\"Current\":{\n" 
+                    for ll in range(0,reg_dict[key],1):
+                        junit="\"Ph" + str(ll+1) + "\"" 
+                        res = int(val[ll])
+                        out += junit + " : " + str(res)
+                        if ll < 2:
+                            out += ",\n"
+                        else:
+                            out += "\n"
+                    out += "},\n"   
+	    elif(err == 0 and rr.function_code > 0x80):
+            #    if reg_dict[key] == 1 or key == 1999:
+            #        out = str(key) + ":Err\n"
+            #    else:
+            #        for ll in range(0,reg_dict[key],1):
+            #            out += str(key+ll) + ":Err\n"
+                count_err.update({unt:1})
+                #break
+            else:
+                count_err.update({unt:1})
+                break
+        #try:
+        #    fh = open(path_file, "r+")
+        #except IOError as e:
+        #    fh = open(path_file, "w+")
+	#fh.truncate()
+	out += "}"
+        #fh.write(out)
+	#fh.close()
+    client.close()
+    
+    print out
+    exit(0)
+
+    out = "Register reading errors in units: "
+    err = 0
+    for key in count_err:
+        if count_err[key] > 0:
+	    out += str(key) + " "
+            err += 1 
+    if err == 0:
+	print "Check result OK"
+	exit(0)
+    elif err > 0:
+	print "Check result WARNING ( "+str(out)+")"
+        exit(0)
+    #elif count_err > 3:
+    #    print "Check result CRITICAL ( "+str(count_err)+" errors )"
+    #    exit(2)
+    else:
+	print "UNKNOWN ERROR CHECK CONFIGURATION"
+        exit(2)
+
+''' functions '''
+def get_modbus_float(v):
+    return struct.unpack('f', struct.pack('I', v))[0]
+
+def usage():
+    print("Скрипт для опроса NSX по протоколу модбас.\n")
+
+''' Lets go '''
+if( __name__ == "__main__"):
+    main()
